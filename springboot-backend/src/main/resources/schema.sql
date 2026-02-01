@@ -29,6 +29,8 @@ CREATE TABLE IF NOT EXISTS node (
   name VARCHAR(100) NOT NULL,
   secret VARCHAR(100) NOT NULL,
   server_ip VARCHAR(100) NOT NULL,
+  server_ip_v4 VARCHAR(100),
+  server_ip_v6 VARCHAR(100),
   port TEXT NOT NULL,
   interface_name VARCHAR(200),
   version VARCHAR(100),

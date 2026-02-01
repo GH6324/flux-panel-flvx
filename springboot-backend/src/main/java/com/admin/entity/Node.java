@@ -24,6 +24,10 @@ public class Node extends BaseEntity {
 
     private String serverIp;
 
+    private String serverIpV4;
+
+    private String serverIpV6;
+
     private String version;
 
     private String port;
@@ -45,5 +49,4 @@ public class Node extends BaseEntity {
      * Lower value appears first.
      */
     private Integer inx;
-
 }

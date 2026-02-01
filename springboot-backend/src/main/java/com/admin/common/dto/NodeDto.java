@@ -16,6 +16,10 @@ public class NodeDto {
     @NotBlank(message = "服务器ip不能为空")
     private String serverIp;
 
+    private String serverIpV4;
+
+    private String serverIpV6;
+
     @NotBlank(message = "可用端口不能为空")
     private String port;
 

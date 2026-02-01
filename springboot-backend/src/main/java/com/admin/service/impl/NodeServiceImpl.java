@@ -21,7 +21,7 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.BeanUtils;
 import org.springframework.context.annotation.Lazy;
 import org.springframework.stereotype.Service;
-
+ 
 import javax.annotation.Resource;
 import java.util.HashMap;
 import java.util.ArrayList;
@@ -56,12 +56,19 @@ public class NodeServiceImpl extends ServiceImpl<NodeMapper, Node> implements No
     @Override
     public R createNode(NodeDto nodeDto) {
         validatePortRange(nodeDto.getPort());
+
+        String normalizedV4 = normalizeV4(nodeDto.getServerIpV4(), nodeDto.getServerIp());
+        String normalizedV6 = normalizeV6(nodeDto.getServerIpV6(), nodeDto.getServerIp());
+        String primaryServerIp = pickPrimaryServerIp(normalizedV4, normalizedV6, nodeDto.getServerIp());
+
         Node node = new Node();
         node.setSecret(IdUtil.simpleUUID());
         node.setStatus(0);
         node.setPort(nodeDto.getPort());
         node.setName(nodeDto.getName());
-        node.setServerIp(nodeDto.getServerIp());
+        node.setServerIp(primaryServerIp);
+        node.setServerIpV4(normalizedV4);
+        node.setServerIpV6(normalizedV6);
         long currentTime = System.currentTimeMillis();
         node.setCreatedTime(currentTime);
         node.setUpdatedTime(currentTime);
@@ -390,10 +397,17 @@ public class NodeServiceImpl extends ServiceImpl<NodeMapper, Node> implements No
 
     private Node buildUpdateNode(NodeUpdateDto nodeUpdateDto) {
         validatePortRange(nodeUpdateDto.getPort());
+
+        String normalizedV4 = normalizeV4(nodeUpdateDto.getServerIpV4(), nodeUpdateDto.getServerIp());
+        String normalizedV6 = normalizeV6(nodeUpdateDto.getServerIpV6(), nodeUpdateDto.getServerIp());
+        String primaryServerIp = pickPrimaryServerIp(normalizedV4, normalizedV6, nodeUpdateDto.getServerIp());
+
         Node node = new Node();
         node.setId(nodeUpdateDto.getId());
         node.setName(nodeUpdateDto.getName());
-        node.setServerIp(nodeUpdateDto.getServerIp());
+        node.setServerIp(primaryServerIp);
+        node.setServerIpV4(normalizedV4);
+        node.setServerIpV6(normalizedV6);
         node.setPort(nodeUpdateDto.getPort());
         node.setHttp(nodeUpdateDto.getHttp());
         node.setTls(nodeUpdateDto.getTls());
@@ -403,6 +417,48 @@ public class NodeServiceImpl extends ServiceImpl<NodeMapper, Node> implements No
         node.setTcpListenAddr(nodeUpdateDto.getTcpListenAddr());
         node.setUdpListenAddr(nodeUpdateDto.getUdpListenAddr());
         return node;
+    }
+
+    private String pickPrimaryServerIp(String serverIpV4, String serverIpV6, String fallback) {
+        if (StrUtil.isNotBlank(serverIpV4)) {
+            return serverIpV4.trim();
+        }
+        if (StrUtil.isNotBlank(serverIpV6)) {
+            return serverIpV6.trim();
+        }
+        return fallback != null ? fallback.trim() : null;
+    }
+
+    private String normalizeV4(String serverIpV4, String legacyServerIp) {
+        if (StrUtil.isNotBlank(serverIpV4)) {
+            return serverIpV4.trim();
+        }
+        if (StrUtil.isNotBlank(legacyServerIp) && looksLikeIpv4(legacyServerIp.trim())) {
+            return legacyServerIp.trim();
+        }
+        return null;
+    }
+
+    private String normalizeV6(String serverIpV6, String legacyServerIp) {
+        if (StrUtil.isNotBlank(serverIpV6)) {
+            return serverIpV6.trim();
+        }
+        if (StrUtil.isNotBlank(legacyServerIp) && looksLikeIpv6(legacyServerIp.trim())) {
+            return legacyServerIp.trim();
+        }
+        return null;
+    }
+
+    private boolean looksLikeIpv4(String value) {
+        // 仅用于判定地址族（不解析域名）
+        Pattern ipv4 = Pattern.compile("^(25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\\.(25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\\.(25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\\.(25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)$");
+        return ipv4.matcher(value).matches();
+    }
+
+    private boolean looksLikeIpv6(String value) {
+        // 粗略判定 IPv6（与 GostUtil.processServerAddress 一致思路）
+        long colonCount = value.chars().filter(ch -> ch == ':').count();
+        return colonCount >= 2;
     }
 
 
