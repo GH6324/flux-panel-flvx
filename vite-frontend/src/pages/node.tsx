@@ -88,6 +88,8 @@ export default function NodePage() {
   const [nodeList, setNodeList] = useState<Node[]>([]);
   const [nodeOrder, setNodeOrder] = useState<number[]>([]);
   const [loading, setLoading] = useState(false);
+  const [wsConnected, setWsConnected] = useState(false);
+  const [wsConnecting, setWsConnecting] = useState(false);
   const [dialogVisible, setDialogVisible] = useState(false);
   const [dialogTitle, setDialogTitle] = useState('');
   const [isEdit, setIsEdit] = useState(false);
@@ -122,6 +124,31 @@ export default function NodePage() {
   const reconnectTimerRef = useRef<NodeJS.Timeout | null>(null);
   const reconnectAttemptsRef = useRef(0);
   const maxReconnectAttempts = 5;
+  const offlineTimersRef = useRef<Map<number, ReturnType<typeof setTimeout>>>(new Map());
+  const offlineDelayMs = 3000;
+
+  const clearOfflineTimer = (nodeId: number) => {
+    const timer = offlineTimersRef.current.get(nodeId);
+    if (timer) {
+      clearTimeout(timer);
+      offlineTimersRef.current.delete(nodeId);
+    }
+  };
+
+  const scheduleNodeOffline = (nodeId: number) => {
+    if (offlineTimersRef.current.has(nodeId)) return;
+    const timer = setTimeout(() => {
+      offlineTimersRef.current.delete(nodeId);
+      setNodeList((prev) =>
+        prev.map((node) => {
+          if (node.id !== nodeId) return node;
+          if (node.connectionStatus === 'offline' && node.systemInfo === null) return node;
+          return { ...node, connectionStatus: 'offline', systemInfo: null };
+        })
+      );
+    }, offlineDelayMs);
+    offlineTimersRef.current.set(nodeId, timer);
+  };
 
   useEffect(() => {
     loadNodes();
@@ -206,12 +233,15 @@ export default function NodePage() {
     // 构建WebSocket URL，使用axios的baseURL
     const baseUrl = axios.defaults.baseURL || (import.meta.env.VITE_API_BASE ? `${import.meta.env.VITE_API_BASE}/api/v1/` : '/api/v1/');
     const wsUrl = baseUrl.replace(/^http/, 'ws').replace(/\/api\/v1\/$/, '') + `/system-info?type=0&secret=${localStorage.getItem('token')}`;
-    
+
     try {
+      setWsConnecting(true);
       websocketRef.current = new WebSocket(wsUrl);
       
       websocketRef.current.onopen = () => {
         reconnectAttemptsRef.current = 0;
+        setWsConnected(true);
+        setWsConnecting(false);
       };
       
       websocketRef.current.onmessage = (event) => {
@@ -229,9 +259,13 @@ export default function NodePage() {
       
       websocketRef.current.onclose = () => {
         websocketRef.current = null;
+        setWsConnected(false);
+        setWsConnecting(false);
         attemptReconnect();
       };
     } catch (error) {
+      setWsConnected(false);
+      setWsConnecting(false);
       attemptReconnect();
     }
   };
@@ -239,21 +273,27 @@ export default function NodePage() {
   // 处理WebSocket消息
   const handleWebSocketMessage = (data: any) => {
     const { id, type, data: messageData } = data;
+    const nodeId = Number(id);
+    if (Number.isNaN(nodeId)) return;
     
     if (type === 'status') {
-      setNodeList(prev => prev.map(node => {
-        if (node.id == id) {
-          return {
-            ...node,
-            connectionStatus: messageData === 1 ? 'online' : 'offline',
-            systemInfo: messageData === 0 ? null : node.systemInfo
-          };
-        }
-        return node;
-      }));
+      if (messageData === 1) {
+        clearOfflineTimer(nodeId);
+        setNodeList((prev) =>
+          prev.map((node) => {
+            if (node.id !== nodeId) return node;
+            if (node.connectionStatus === 'online') return node;
+            return { ...node, connectionStatus: 'online' };
+          })
+        );
+      } else {
+        // 离线事件做延迟处理，避免短抖动导致频繁闪烁
+        scheduleNodeOffline(nodeId);
+      }
     } else if (type === 'info') {
+      clearOfflineTimer(nodeId);
       setNodeList(prev => prev.map(node => {
-        if (node.id == id) {
+        if (node.id === nodeId) {
           try {
             let systemInfo;
             if (typeof messageData === 'string') {
@@ -316,10 +356,12 @@ export default function NodePage() {
 
   // 尝试重新连接
   const attemptReconnect = () => {
+    if (reconnectTimerRef.current) return;
     if (reconnectAttemptsRef.current < maxReconnectAttempts) {
       reconnectAttemptsRef.current++;
       
       reconnectTimerRef.current = setTimeout(() => {
+        reconnectTimerRef.current = null;
         initWebSocket();
       }, 3000 * reconnectAttemptsRef.current);
     }
@@ -331,8 +373,13 @@ export default function NodePage() {
       clearTimeout(reconnectTimerRef.current);
       reconnectTimerRef.current = null;
     }
+
+    offlineTimersRef.current.forEach((timer) => clearTimeout(timer));
+    offlineTimersRef.current.clear();
     
     reconnectAttemptsRef.current = 0;
+    setWsConnected(false);
+    setWsConnecting(false);
     
     if (websocketRef.current) {
       websocketRef.current.onopen = null;
@@ -347,12 +394,6 @@ export default function NodePage() {
       
       websocketRef.current = null;
     }
-    
-    setNodeList(prev => prev.map(node => ({
-      ...node,
-      connectionStatus: 'offline',
-      systemInfo: null
-    })));
   };
 
 
@@ -822,6 +863,15 @@ export default function NodePage() {
             </Button>
      
         </div>
+
+        {!wsConnected && (
+          <Alert
+            color="warning"
+            variant="flat"
+            description={wsConnecting ? '监控连接中...' : '监控连接已断开，正在重连...'}
+            className="mb-4"
+          />
+        )}
 
         {/* 节点列表 */}
         {loading ? (
