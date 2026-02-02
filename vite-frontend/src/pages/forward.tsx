@@ -1117,6 +1117,8 @@ export default function ForwardPage() {
     })
   );
 
+  const tokenUserId = JwtUtil.getUserIdFromToken();
+
   // 根据排序顺序获取转发列表
   const sortedForwards = useMemo((): Forward[] => {
     // 确保 forwards 数组存在且有效
@@ -1127,9 +1129,8 @@ export default function ForwardPage() {
     // 在平铺模式下，只显示当前用户的转发
     let filteredForwards = forwards;
     if (viewMode === 'direct') {
-      const currentUserId = JwtUtil.getUserIdFromToken();
-      if (currentUserId !== null) {
-        filteredForwards = forwards.filter(forward => forward.userId === currentUserId);
+      if (tokenUserId !== null) {
+        filteredForwards = forwards.filter(forward => forward.userId === tokenUserId);
       }
     }
 
@@ -1168,7 +1169,7 @@ export default function ForwardPage() {
     }
 
     return sortedByDb;
-  }, [forwards, forwardOrder, viewMode]);
+  }, [forwards, forwardOrder, viewMode, tokenUserId]);
 
   const sortableForwardIds = useMemo(
     () => sortedForwards.map(f => f.id).filter(id => id > 0),

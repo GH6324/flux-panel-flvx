@@ -741,31 +741,45 @@ export default function DashboardPage() {
                            tickLine={false}
                            axisLine={{ stroke: '#e5e7eb', strokeWidth: 1 }}
                          />
-                         <YAxis 
-                           tick={{ fontSize: 12 }}
-                           tickLine={false}
-                           axisLine={{ stroke: '#e5e7eb', strokeWidth: 1 }}
-                           tickFormatter={(value) => {
-                             if (value === 0) return '0';
-                             if (value < 1024) return `${value}B`;
-                             if (value < 1024 * 1024) return `${(value / 1024).toFixed(1)}K`;
-                             if (value < 1024 * 1024 * 1024) return `${(value / (1024 * 1024)).toFixed(1)}M`;
-                             return `${(value / (1024 * 1024 * 1024)).toFixed(1)}G`;
-                           }}
-                         />
-                         <Tooltip 
-                           content={({ active, payload, label }) => {
-                             if (active && payload && payload.length) {
-                               return (
-                                 <div className="bg-white dark:bg-default-100 border border-default-200 rounded-lg shadow-lg p-3">
-                                   <p className="font-medium text-foreground">{`时间: ${label}`}</p>
-                                   <p className="text-primary">
-                                     {`流量: ${formatFlow(payload[0]?.value as number || 0)}`}
-                                   </p>
-                                 </div>
-                               );
-                             }
-                             return null;
+                          <YAxis 
+                            tick={{ fontSize: 12 }}
+                            tickLine={false}
+                            axisLine={{ stroke: '#e5e7eb', strokeWidth: 1 }}
+                            tickFormatter={(value: number | string) => {
+                              const v = typeof value === 'number' ? value : Number(value);
+                              if (!Number.isFinite(v)) return String(value);
+                              if (v === 0) return '0';
+                              if (v < 1024) return `${v}B`;
+                              if (v < 1024 * 1024) return `${(v / 1024).toFixed(1)}K`;
+                              if (v < 1024 * 1024 * 1024) return `${(v / (1024 * 1024)).toFixed(1)}M`;
+                              return `${(v / (1024 * 1024 * 1024)).toFixed(1)}G`;
+                            }}
+                          />
+                          <Tooltip 
+                            content={({
+                              active,
+                              payload,
+                              label,
+                            }: {
+                              active?: boolean;
+                              payload?: Array<{ value?: number | string }>;
+                              label?: string | number;
+                            }) => {
+                              if (active && payload && payload.length) {
+                                const firstValue = payload[0]?.value;
+                                const numericValue = typeof firstValue === 'number' ? firstValue : Number(firstValue);
+                                const flowValue = Number.isFinite(numericValue) ? numericValue : 0;
+
+                                return (
+                                  <div className="bg-white dark:bg-default-100 border border-default-200 rounded-lg shadow-lg p-3">
+                                    <p className="font-medium text-foreground">{`时间: ${label ?? ''}`}</p>
+                                    <p className="text-primary">
+                                      {`流量: ${formatFlow(flowValue)}`}
+                                    </p>
+                                  </div>
+                                );
+                              }
+                              return null;
                            }}
                          />
                          <Line
