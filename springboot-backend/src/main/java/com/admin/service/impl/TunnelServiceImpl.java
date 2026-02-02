@@ -597,7 +597,10 @@ public class TunnelServiceImpl extends ServiceImpl<TunnelMapper, Tunnel> impleme
         Integer roleId = JwtUtil.getRoleIdFromToken();
         Integer userId = JwtUtil.getUserIdFromToken();
         if (roleId == 0) {
-            tunnelEntities = this.list(new QueryWrapper<Tunnel>().eq("status", 1));
+            tunnelEntities = this.list(new QueryWrapper<Tunnel>()
+                    .eq("status", 1)
+                    .orderByAsc("inx")
+                    .orderByAsc("id"));
         } else {
             tunnelEntities = java.util.Collections.emptyList(); // 返回空列表
             List<UserTunnel> userTunnels = userTunnelMapper.selectList(
@@ -609,7 +612,9 @@ public class TunnelServiceImpl extends ServiceImpl<TunnelMapper, Tunnel> impleme
                         .collect(Collectors.toList());
                 tunnelEntities = this.list(new QueryWrapper<Tunnel>()
                         .in("id", tunnelIds)
-                        .eq("status", 1));
+                        .eq("status", 1)
+                        .orderByAsc("inx")
+                        .orderByAsc("id"));
             }
 
         }
