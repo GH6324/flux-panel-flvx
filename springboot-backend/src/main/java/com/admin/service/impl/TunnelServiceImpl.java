@@ -430,6 +430,15 @@ public class TunnelServiceImpl extends ServiceImpl<TunnelMapper, Tunnel> impleme
         if (hasNodeChanges && tunnelUpdateDto.getInNodeId() != null) {
             List<ChainTunnel> backupChains = deepCopyChainTunnels(oldChainTunnels);
 
+            Set<Long> oldEntryNodeIds = oldChainTunnels.stream()
+                    .filter(ct -> ct.getChainType() != null && ct.getChainType() == 1)
+                    .map(ChainTunnel::getNodeId)
+                    .collect(Collectors.toSet());
+
+            Set<Long> newEntryNodeIds = tunnelUpdateDto.getInNodeId().stream()
+                    .map(ChainTunnel::getNodeId)
+                    .collect(Collectors.toSet());
+
             List<Long> nodeIds = new ArrayList<>();
             Map<Long, Node> nodes = new HashMap<>();
 
@@ -510,6 +519,8 @@ public class TunnelServiceImpl extends ServiceImpl<TunnelMapper, Tunnel> impleme
                 }
 
                 chainTunnelService.saveBatch(newChainTunnels);
+
+                syncForwardsForEntryNodeChanges(existingTunnel.getId(), oldEntryNodeIds, newEntryNodeIds);
 
             } catch (Exception e) {
                 chainTunnelService.saveBatch(backupChains);
@@ -1151,6 +1162,149 @@ public class TunnelServiceImpl extends ServiceImpl<TunnelMapper, Tunnel> impleme
                 GostUtil.AddChainService(outNode.getNodeId(), outNode, nodes);
             }
         }
+    }
+
+    private void syncForwardsForEntryNodeChanges(Long tunnelId, Set<Long> oldEntryNodeIds, Set<Long> newEntryNodeIds) {
+        Set<Long> addedNodeIds = new HashSet<>(newEntryNodeIds);
+        addedNodeIds.removeAll(oldEntryNodeIds);
+
+        Set<Long> removedNodeIds = new HashSet<>(oldEntryNodeIds);
+        removedNodeIds.removeAll(newEntryNodeIds);
+
+        if (addedNodeIds.isEmpty() && removedNodeIds.isEmpty()) {
+            return;
+        }
+
+        List<Forward> forwards = forwardService.list(
+                new QueryWrapper<Forward>().eq("tunnel_id", tunnelId.intValue())
+        );
+
+        if (forwards.isEmpty()) {
+            return;
+        }
+
+        Tunnel tunnel = this.getById(tunnelId);
+        if (tunnel == null) {
+            return;
+        }
+
+        for (Forward forward : forwards) {
+            if (forward.getStatus() != 1) {
+                continue;
+            }
+
+            UserTunnel userTunnel = userTunnelService.getOne(
+                    new QueryWrapper<UserTunnel>()
+                            .eq("user_id", forward.getUserId())
+                            .eq("tunnel_id", tunnelId.intValue())
+            );
+
+            for (Long removedNodeId : removedNodeIds) {
+                ForwardPort forwardPort = forwardPortService.getOne(
+                        new QueryWrapper<ForwardPort>()
+                                .eq("forward_id", forward.getId())
+                                .eq("node_id", removedNodeId)
+                );
+
+                if (forwardPort != null) {
+                    String serviceName = buildForwardServiceName(forward.getId(), forward.getUserId(), userTunnel);
+                    JSONArray services = new JSONArray();
+                    services.add(serviceName + "_tcp");
+                    services.add(serviceName + "_udp");
+                    GostUtil.DeleteService(removedNodeId, services);
+
+                    forwardPortService.removeById(forwardPort.getId());
+                }
+            }
+
+            for (Long addedNodeId : addedNodeIds) {
+                ForwardPort existingPort = forwardPortService.getOne(
+                        new QueryWrapper<ForwardPort>()
+                                .eq("forward_id", forward.getId())
+                                .eq("node_id", addedNodeId)
+                );
+
+                if (existingPort != null) {
+                    continue;
+                }
+
+                List<ForwardPort> existingPorts = forwardPortService.list(
+                        new QueryWrapper<ForwardPort>().eq("forward_id", forward.getId())
+                );
+
+                Integer targetPort = null;
+                if (!existingPorts.isEmpty()) {
+                    targetPort = existingPorts.get(0).getPort();
+                }
+
+                Integer allocatedPort = allocatePortForNode(addedNodeId, targetPort, forward.getId());
+                if (allocatedPort == null) {
+                    System.err.println("Failed to allocate port on node " + addedNodeId + " for forward " + forward.getId());
+                    continue;
+                }
+
+                ForwardPort newForwardPort = new ForwardPort();
+                newForwardPort.setForwardId(forward.getId());
+                newForwardPort.setNodeId(addedNodeId);
+                newForwardPort.setPort(allocatedPort);
+                forwardPortService.save(newForwardPort);
+
+                Node node = nodeService.getById(addedNodeId);
+                if (node != null) {
+                    String serviceName = buildForwardServiceName(forward.getId(), forward.getUserId(), userTunnel);
+                    Integer limiter = (userTunnel != null && userTunnel.getSpeedId() != null) ? userTunnel.getSpeedId() : null;
+                    GostUtil.AddAndUpdateService(serviceName, limiter, node, forward, newForwardPort, tunnel, "AddService");
+                }
+            }
+        }
+    }
+
+    private Integer allocatePortForNode(Long nodeId, Integer preferredPort, Long forwardId) {
+        Node node = nodeService.getById(nodeId);
+        if (node == null || node.getPort() == null) {
+            return null;
+        }
+
+        Set<Integer> usedPorts = new HashSet<>();
+
+        List<ChainTunnel> chainTunnels = chainTunnelService.list(
+                new QueryWrapper<ChainTunnel>().eq("node_id", nodeId)
+        );
+        for (ChainTunnel ct : chainTunnels) {
+            if (ct.getPort() != null) {
+                usedPorts.add(ct.getPort());
+            }
+        }
+
+        List<ForwardPort> forwardPorts = forwardPortService.list(
+                new QueryWrapper<ForwardPort>()
+                        .eq("node_id", nodeId)
+                        .ne("forward_id", forwardId)
+        );
+        for (ForwardPort fp : forwardPorts) {
+            if (fp.getPort() != null) {
+                usedPorts.add(fp.getPort());
+            }
+        }
+
+        List<Integer> availablePorts = parsePorts(node.getPort());
+
+        if (preferredPort != null && availablePorts.contains(preferredPort) && !usedPorts.contains(preferredPort)) {
+            return preferredPort;
+        }
+
+        for (Integer port : availablePorts) {
+            if (!usedPorts.contains(port)) {
+                return port;
+            }
+        }
+
+        return null;
+    }
+
+    private String buildForwardServiceName(Long forwardId, Integer userId, UserTunnel userTunnel) {
+        int userTunnelId = (userTunnel != null) ? userTunnel.getId() : 0;
+        return forwardId + "_" + userId + "_" + userTunnelId;
     }
 
 
