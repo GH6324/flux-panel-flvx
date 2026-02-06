@@ -8,6 +8,8 @@ import com.admin.common.utils.JwtUtil;
 import com.admin.common.utils.WebSocketServer;
 import com.admin.entity.*;
 import com.admin.mapper.TunnelMapper;
+import com.admin.mapper.GroupPermissionGrantMapper;
+import com.admin.mapper.TunnelGroupTunnelMapper;
 import com.admin.mapper.UserTunnelMapper;
 import com.admin.service.*;
 import com.alibaba.fastjson.JSONArray;
@@ -51,6 +53,12 @@ public class TunnelServiceImpl extends ServiceImpl<TunnelMapper, Tunnel> impleme
 
     @Resource
     ForwardPortService forwardPortService;
+
+    @Resource
+    TunnelGroupTunnelMapper tunnelGroupTunnelMapper;
+
+    @Resource
+    GroupPermissionGrantMapper groupPermissionGrantMapper;
 
 
     @Override
@@ -578,8 +586,16 @@ public class TunnelServiceImpl extends ServiceImpl<TunnelMapper, Tunnel> impleme
         for (Forward forward : forwardList) {
             forwardService.deleteForward(forward.getId());
         }
+
+        List<UserTunnel> userTunnels = userTunnelService.list(new QueryWrapper<UserTunnel>().eq("tunnel_id", id));
+        if (!userTunnels.isEmpty()) {
+            List<Integer> userTunnelIds = userTunnels.stream().map(UserTunnel::getId).toList();
+            groupPermissionGrantMapper.delete(new QueryWrapper<com.admin.entity.GroupPermissionGrant>().in("user_tunnel_id", userTunnelIds));
+        }
+
         forwardService.remove(new QueryWrapper<Forward>().eq("tunnel_id", id));
         userTunnelService.remove(new QueryWrapper<UserTunnel>().eq("tunnel_id", id));
+        tunnelGroupTunnelMapper.delete(new QueryWrapper<TunnelGroupTunnel>().eq("tunnel_id", id));
         this.removeById(id);
 
         List<ChainTunnel> chainTunnels = chainTunnelService.list(new QueryWrapper<ChainTunnel>().eq("tunnel_id", id));

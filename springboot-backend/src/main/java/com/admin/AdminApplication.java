@@ -13,6 +13,7 @@ import org.springframework.scheduling.annotation.EnableScheduling;
 @SpringBootApplication
 @EnableAsync
 @EnableScheduling
+@MapperScan("com.admin.mapper")
 public class AdminApplication {
 
     public static void main(String[] args) {

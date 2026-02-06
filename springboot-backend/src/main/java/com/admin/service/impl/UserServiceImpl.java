@@ -11,6 +11,8 @@ import com.admin.common.utils.JwtUtil;
 import com.admin.common.utils.Md5Util;
 import com.admin.entity.*;
 import com.admin.mapper.UserMapper;
+import com.admin.mapper.GroupPermissionGrantMapper;
+import com.admin.mapper.UserGroupUserMapper;
 import com.admin.service.*;
 import com.baomidou.mybatisplus.core.conditions.query.QueryWrapper;
 import com.baomidou.mybatisplus.extension.service.impl.ServiceImpl;
@@ -55,6 +57,12 @@ public class UserServiceImpl extends ServiceImpl<UserMapper, User> implements Us
 
     @Resource
     StatisticsFlowService statisticsFlowService;
+
+    @Resource
+    GroupPermissionGrantMapper groupPermissionGrantMapper;
+
+    @Resource
+    UserGroupUserMapper userGroupUserMapper;
 
     @Resource
     @Lazy
@@ -140,8 +148,16 @@ public class UserServiceImpl extends ServiceImpl<UserMapper, User> implements Us
         for (Forward forward : forwardList) {
             forwardService.deleteForward(forward.getId());
         }
+
+        List<UserTunnel> userTunnels = userTunnelService.list(new QueryWrapper<UserTunnel>().eq("user_id", id));
+        if (!userTunnels.isEmpty()) {
+            List<Integer> userTunnelIds = userTunnels.stream().map(UserTunnel::getId).toList();
+            groupPermissionGrantMapper.delete(new QueryWrapper<com.admin.entity.GroupPermissionGrant>().in("user_tunnel_id", userTunnelIds));
+        }
+
         forwardService.remove(new QueryWrapper<Forward>().eq("user_id", id));
         userTunnelService.remove(new QueryWrapper<UserTunnel>().eq("user_id", id));
+        userGroupUserMapper.delete(new QueryWrapper<UserGroupUser>().eq("user_id", id));
         statisticsFlowService.remove(new QueryWrapper<StatisticsFlow>().eq("user_id", id));
         this.removeById(id);
         return R.ok();

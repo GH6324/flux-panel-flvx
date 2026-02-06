@@ -8,6 +8,7 @@ import ForwardPage from "@/pages/forward";
 import TunnelPage from "@/pages/tunnel";
 import NodePage from "@/pages/node";
 import UserPage from "@/pages/user";
+import GroupPage from "@/pages/group";
 import ProfilePage from "@/pages/profile";
 import LimitPage from "@/pages/limit";
 import ConfigPage from "@/pages/config";
@@ -148,9 +149,7 @@ function App() {
         if (cachedAppName && cachedAppName !== document.title) {
           document.title = cachedAppName;
         }
-      } catch (error) {
-        console.warn("检查标题更新失败:", error);
-      }
+      } catch {}
     };
 
     // 延迟检查，避免阻塞初始渲染
@@ -209,6 +208,14 @@ function App() {
           </ProtectedRoute>
         }
         path="/user"
+      />
+      <Route
+        element={
+          <ProtectedRoute useSimpleLayout={true}>
+            <GroupPage />
+          </ProtectedRoute>
+        }
+        path="/group"
       />
       <Route
         element={

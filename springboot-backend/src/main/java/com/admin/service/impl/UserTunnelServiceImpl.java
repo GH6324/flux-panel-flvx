@@ -2,8 +2,10 @@ package com.admin.service.impl;
 
 import com.admin.common.dto.*;
 import com.admin.common.lang.R;
+import com.admin.entity.GroupPermissionGrant;
 import com.admin.entity.User;
 import com.admin.entity.UserTunnel;
+import com.admin.mapper.GroupPermissionGrantMapper;
 import com.admin.mapper.UserTunnelMapper;
 import com.admin.service.UserService;
 import com.admin.service.UserTunnelService;
@@ -33,6 +35,9 @@ public class UserTunnelServiceImpl extends ServiceImpl<UserTunnelMapper, UserTun
     @Resource
     @Lazy
     private UserService userService;
+
+    @Resource
+    private GroupPermissionGrantMapper groupPermissionGrantMapper;
 
     @Override
     public R assignUserTunnel(UserTunnelDto userTunnelDto) {
@@ -122,6 +127,13 @@ public class UserTunnelServiceImpl extends ServiceImpl<UserTunnelMapper, UserTun
     public R removeUserTunnel(Integer id) {
         UserTunnel userTunnel = this.getById(id);
         if (userTunnel == null) return R.err("未找到对应的用户隧道权限记录");
+
+        int grantCount = groupPermissionGrantMapper.selectCount(
+                new QueryWrapper<GroupPermissionGrant>().eq("user_tunnel_id", id)
+        );
+        if (grantCount > 0) {
+            return R.err("该隧道权限由分组授权，请先调整分组权限或分组成员");
+        }
 
         List<Forward> forwardList = forwardService.list(new QueryWrapper<Forward>()
                 .eq("user_id", userTunnel.getUserId())

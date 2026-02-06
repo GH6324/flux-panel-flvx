@@ -135,6 +135,16 @@ export default function AdminLayout({
       adminOnly: true,
     },
     {
+      path: "/group",
+      label: "分组",
+      icon: (
+        <svg className="w-5 h-5" fill="currentColor" viewBox="0 0 20 20">
+          <path d="M10 2a3 3 0 100 6 3 3 0 000-6zM4 9a3 3 0 100 6 3 3 0 000-6zm12 0a3 3 0 100 6 3 3 0 000-6M4 16a2 2 0 00-2 2h4a2 2 0 00-2-2zm12 0a2 2 0 00-2 2h4a2 2 0 00-2-2zm-6 0a2 2 0 00-2 2h4a2 2 0 00-2-2z" />
+        </svg>
+      ),
+      adminOnly: true,
+    },
+    {
       path: "/config",
       label: "设置",
       icon: (
@@ -260,9 +270,8 @@ export default function AdminLayout({
       } else {
         toast.error(response.msg || "密码修改失败");
       }
-    } catch (error) {
+    } catch {
       toast.error("修改密码时发生错误");
-      console.error("修改密码错误:", error);
     } finally {
       setPasswordLoading(false);
     }
@@ -289,8 +298,10 @@ export default function AdminLayout({
     >
       {/* 移动端遮罩层 */}
       {isMobile && mobileMenuVisible && (
-        <div
+        <button
+          aria-label="关闭菜单"
           className="fixed inset-0 backdrop-blur-sm bg-white/50 dark:bg-black/30 z-40"
+          type="button"
           onClick={hideMobileMenu}
         />
       )}
