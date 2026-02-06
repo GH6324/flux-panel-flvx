@@ -1306,6 +1306,37 @@ public class ForwardServiceImpl extends ServiceImpl<ForwardMapper, Forward> impl
 
     @Override
     @Transactional
+    public R batchPauseForwards(BatchDeleteDto batchDeleteDto) {
+        return batchChangeForwardStatus(batchDeleteDto.getIds(), 0, "PauseService");
+    }
+
+    @Override
+    @Transactional
+    public R batchResumeForwards(BatchDeleteDto batchDeleteDto) {
+        return batchChangeForwardStatus(batchDeleteDto.getIds(), 1, "ResumeService");
+    }
+
+    private R batchChangeForwardStatus(List<Long> ids, int targetStatus, String gostMethod) {
+        BatchOperationResultDto result = new BatchOperationResultDto();
+
+        for (Long id : ids) {
+            try {
+                R changeResult = changeForwardStatus(id, targetStatus, gostMethod);
+                if (changeResult.getCode() == 0) {
+                    result.incrementSuccess();
+                } else {
+                    result.addFailedItem(id, changeResult.getMsg());
+                }
+            } catch (Exception e) {
+                result.addFailedItem(id, e.getMessage());
+            }
+        }
+
+        return R.ok(result);
+    }
+
+    @Override
+    @Transactional
     public R batchRedeployForwards(BatchRedeployDto batchRedeployDto) {
         UserInfo currentUser = getCurrentUserInfo();
         BatchOperationResultDto result = new BatchOperationResultDto();
@@ -1384,6 +1415,15 @@ public class ForwardServiceImpl extends ServiceImpl<ForwardMapper, Forward> impl
                     result.addFailedItem(forwardId, "已是目标隧道");
                     continue;
                 }
+
+                List<ForwardPort> existingForwardPorts = forwardPortService.list(
+                        new QueryWrapper<ForwardPort>().eq("forward_id", forwardId).orderByAsc("id")
+                );
+                Integer originalInPort = existingForwardPorts.stream()
+                        .map(ForwardPort::getPort)
+                        .filter(Objects::nonNull)
+                        .findFirst()
+                        .orElse(null);
                 
                 Tunnel oldTunnel = validateTunnel(forward.getTunnelId());
                 if (oldTunnel != null) {
@@ -1424,7 +1464,7 @@ public class ForwardServiceImpl extends ServiceImpl<ForwardMapper, Forward> impl
                 List<ChainTunnel> newChainTunnels = chainTunnelService.list(
                     new QueryWrapper<ChainTunnel>().eq("tunnel_id", targetTunnel.getId()).eq("chain_type", 1)
                 );
-                List<ChainTunnel> chainTunnelsWithPort = get_port(newChainTunnels, null, forwardId);
+                List<ChainTunnel> chainTunnelsWithPort = allocatePortsForBatchTunnelChange(newChainTunnels, originalInPort, forwardId);
                 
                 for (ChainTunnel chainTunnel : chainTunnelsWithPort) {
                     ForwardPort forwardPort = new ForwardPort();
@@ -1448,6 +1488,25 @@ public class ForwardServiceImpl extends ServiceImpl<ForwardMapper, Forward> impl
         }
         
         return R.ok(result);
+    }
+
+    private List<ChainTunnel> allocatePortsForBatchTunnelChange(List<ChainTunnel> newChainTunnels, Integer originalInPort, Long forwardId) {
+        if (originalInPort == null) {
+            return get_port(newChainTunnels, null, forwardId);
+        }
+
+        try {
+            return get_port(newChainTunnels, originalInPort, forwardId);
+        } catch (RuntimeException originalPortError) {
+            try {
+                return get_port(newChainTunnels, null, forwardId);
+            } catch (RuntimeException autoAllocateError) {
+                throw new RuntimeException(
+                        "原入口端口 " + originalInPort + " 在目标隧道不可用，自动分配新端口也失败: " + autoAllocateError.getMessage(),
+                        autoAllocateError
+                );
+            }
+        }
     }
 
 }

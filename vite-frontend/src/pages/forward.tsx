@@ -49,6 +49,8 @@ import {
   diagnoseForward,
   updateForwardOrder,
   batchDeleteForwards,
+  batchPauseForwards,
+  batchResumeForwards,
   batchRedeployForwards,
   batchChangeTunnel,
 } from "@/api";
@@ -1315,10 +1317,42 @@ export default function ForwardPage() {
         setBatchDeleteModalOpen(false);
         loadData(false);
       } else {
-        toast.error(res.msg || "批量删除失败");
+        toast.error(res.msg || "删除失败");
       }
     } catch (e: any) {
-      toast.error(e.message || "批量删除失败");
+      toast.error(e.message || "删除失败");
+    } finally {
+      setBatchLoading(false);
+    }
+  };
+
+  const handleBatchToggleService = async (enable: boolean) => {
+    if (selectedIds.size === 0) return;
+    setBatchLoading(true);
+    try {
+      const ids = Array.from(selectedIds);
+      const res = enable
+        ? await batchResumeForwards(ids)
+        : await batchPauseForwards(ids);
+      if (res.code === 0) {
+        const result = res.data;
+        if (result.failCount === 0) {
+          toast.success(
+            enable
+              ? `成功启用 ${result.successCount} 项`
+              : `成功停用 ${result.successCount} 项`,
+          );
+        } else {
+          toast.error(`成功 ${result.successCount} 项，失败 ${result.failCount} 项`);
+        }
+        setSelectedIds(new Set());
+        setSelectMode(false);
+        loadData(false);
+      } else {
+        toast.error(res.msg || (enable ? "启用失败" : "停用失败"));
+      }
+    } catch (e: any) {
+      toast.error(e.message || (enable ? "启用失败" : "停用失败"));
     } finally {
       setBatchLoading(false);
     }
@@ -1340,10 +1374,10 @@ export default function ForwardPage() {
         setSelectMode(false);
         loadData(false);
       } else {
-        toast.error(res.msg || "批量重新下发失败");
+        toast.error(res.msg || "下发失败");
       }
     } catch (e: any) {
-      toast.error(e.message || "批量重新下发失败");
+      toast.error(e.message || "下发失败");
     } finally {
       setBatchLoading(false);
     }
@@ -1370,10 +1404,10 @@ export default function ForwardPage() {
         setBatchTargetTunnelId(null);
         loadData(false);
       } else {
-        toast.error(res.msg || "批量换隧道失败");
+        toast.error(res.msg || "隧道失败");
       }
     } catch (e: any) {
-      toast.error(e.message || "批量换隧道失败");
+      toast.error(e.message || "隧道失败");
     } finally {
       setBatchLoading(false);
     }
@@ -1731,9 +1765,9 @@ export default function ForwardPage() {
   return (
     <div className="px-3 lg:px-6 py-8">
       {/* 页面头部 */}
-      <div className="flex items-center justify-between mb-6">
+      <div className="flex items-center justify-between mb-6 gap-2">
         <div className="flex-1"></div>
-        <div className="flex items-center gap-3">
+        <div className="flex flex-wrap items-center justify-end gap-2 sm:gap-3">
           {/* 显示模式切换按钮 */}
           <Button
             isIconOnly
@@ -1786,7 +1820,7 @@ export default function ForwardPage() {
             color={selectMode ? "warning" : "default"}
             onPress={toggleSelectMode}
           >
-            {selectMode ? "退出选择" : "批量操作"}
+            {selectMode ? "退出" : "批量"}
           </Button>
 
           <Button size="sm" variant="flat" color="primary" onPress={handleAdd}>
@@ -1796,39 +1830,59 @@ export default function ForwardPage() {
       </div>
 
       {selectMode && selectedIds.size > 0 && (
-        <div className="fixed bottom-4 left-1/2 transform -translate-x-1/2 z-50 bg-content1 shadow-lg rounded-lg border border-divider p-3 flex items-center gap-3">
-          <span className="text-sm text-default-600">已选择 {selectedIds.size} 项</span>
-          <Button size="sm" variant="flat" onPress={selectAll}>
-            全选
-          </Button>
-          <Button size="sm" variant="flat" onPress={deselectAll}>
-            取消全选
-          </Button>
-          <Button
-            size="sm"
-            color="danger"
-            variant="flat"
-            onPress={() => setBatchDeleteModalOpen(true)}
-          >
-            批量删除
-          </Button>
-          <Button
-            size="sm"
-            color="primary"
-            variant="flat"
-            onPress={handleBatchRedeploy}
-            isLoading={batchLoading}
-          >
-            批量重新下发
-          </Button>
-          <Button
-            size="sm"
-            color="secondary"
-            variant="flat"
-            onPress={() => setBatchChangeTunnelModalOpen(true)}
-          >
-            批量换隧道
-          </Button>
+        <div className="fixed bottom-7 left-1/2 z-50 w-[calc(100vw-1rem)] max-w-max -translate-x-1/2 overflow-x-auto rounded-lg border border-divider bg-content1 p-2 shadow-lg">
+          <div className="flex min-w-max items-center gap-2">
+            <span className="text-sm text-default-600 shrink-0">已选择 {selectedIds.size} 项</span>
+            <Button size="sm" variant="flat" onPress={selectAll}>
+              全选
+            </Button>
+            <Button size="sm" variant="flat" onPress={deselectAll}>
+              清空
+            </Button>
+            <Button
+              size="sm"
+              color="danger"
+              variant="flat"
+              onPress={() => setBatchDeleteModalOpen(true)}
+            >
+              删除
+            </Button>
+            <Button
+              size="sm"
+              color="warning"
+              variant="flat"
+              onPress={() => handleBatchToggleService(false)}
+              isLoading={batchLoading}
+            >
+              停用
+            </Button>
+            <Button
+              size="sm"
+              color="success"
+              variant="flat"
+              onPress={() => handleBatchToggleService(true)}
+              isLoading={batchLoading}
+            >
+              启用
+            </Button>
+            <Button
+              size="sm"
+              color="primary"
+              variant="flat"
+              onPress={handleBatchRedeploy}
+              isLoading={batchLoading}
+            >
+              下发
+            </Button>
+            <Button
+              size="sm"
+              color="secondary"
+              variant="flat"
+              onPress={() => setBatchChangeTunnelModalOpen(true)}
+            >
+              隧道
+            </Button>
+          </div>
         </div>
       )}
 
@@ -3069,7 +3123,7 @@ export default function ForwardPage() {
         <ModalContent>
           {(onClose) => (
             <>
-              <ModalHeader>确认批量删除</ModalHeader>
+              <ModalHeader>确认删除</ModalHeader>
               <ModalBody>
                 <p>确定要删除选中的 {selectedIds.size} 项转发吗？此操作不可撤销。</p>
               </ModalBody>
@@ -3095,7 +3149,7 @@ export default function ForwardPage() {
         <ModalContent>
           {(onClose) => (
             <>
-              <ModalHeader>批量换隧道</ModalHeader>
+              <ModalHeader>隧道</ModalHeader>
               <ModalBody>
                 <p className="mb-4">将选中的 {selectedIds.size} 项转发迁移到新隧道：</p>
                 <Select

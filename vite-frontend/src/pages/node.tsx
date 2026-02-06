@@ -939,7 +939,7 @@ export default function NodePage() {
         setBatchDeleteModalOpen(false);
         setSelectMode(false);
       } else {
-        toast.error(res.msg || "批量删除失败");
+        toast.error(res.msg || "删除失败");
       }
     } catch (error) {
       toast.error("网络错误，请重试");
@@ -1032,16 +1032,16 @@ export default function NodePage() {
 
       {/* 批量操作浮动工具栏 */}
       {selectMode && selectedIds.size > 0 && (
-        <div className="fixed bottom-6 left-1/2 -translate-x-1/2 z-50 bg-content1 shadow-lg rounded-full px-6 py-3 flex items-center gap-4 border border-divider">
-          <span className="text-sm font-medium">
-            已选 {selectedIds.size} 项
-          </span>
-          <div className="flex gap-2">
+        <div className="fixed bottom-7 left-1/2 z-50 w-[calc(100vw-1rem)] max-w-max -translate-x-1/2 overflow-x-auto rounded-lg border border-divider bg-content1 p-2 shadow-lg">
+          <div className="flex min-w-max items-center gap-2">
+            <span className="text-sm font-medium shrink-0">
+              已选 {selectedIds.size} 项
+            </span>
             <Button size="sm" variant="flat" onPress={selectAll}>
               全选
             </Button>
             <Button size="sm" variant="flat" onPress={deselectAll}>
-              取消全选
+              清空
             </Button>
             <Button
               color="danger"
@@ -1049,7 +1049,7 @@ export default function NodePage() {
               variant="flat"
               onPress={() => setBatchDeleteModalOpen(true)}
             >
-              批量删除
+              删除
             </Button>
           </div>
         </div>
@@ -1814,7 +1814,7 @@ export default function NodePage() {
           {(onClose) => (
             <>
               <ModalHeader className="flex flex-col gap-1">
-                <h2 className="text-xl font-bold">确认批量删除</h2>
+                <h2 className="text-xl font-bold">确认删除</h2>
               </ModalHeader>
               <ModalBody>
                 <p>
