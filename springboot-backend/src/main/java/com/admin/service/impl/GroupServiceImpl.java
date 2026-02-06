@@ -550,7 +550,7 @@ public class GroupServiceImpl implements GroupService {
 
     private Map<Long, Long> buildGrantCountMap(Set<Long> userTunnelIds) {
         if (userTunnelIds.isEmpty()) {
-            return Collections.emptyMap();
+            return new HashMap<>();
         }
 
         List<GroupPermissionGrant> grants = groupPermissionGrantMapper.selectList(new QueryWrapper<GroupPermissionGrant>().in("user_tunnel_id", userTunnelIds));
