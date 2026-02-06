@@ -4,6 +4,7 @@ import com.admin.common.dto.*;
 import com.admin.common.lang.R;
 import com.admin.entity.User;
 import com.admin.entity.UserTunnel;
+import com.admin.mapper.GroupPermissionGrantMapper;
 import com.admin.mapper.UserTunnelMapper;
 import com.admin.service.UserService;
 import com.admin.service.UserTunnelService;
@@ -33,6 +34,9 @@ public class UserTunnelServiceImpl extends ServiceImpl<UserTunnelMapper, UserTun
     @Resource
     @Lazy
     private UserService userService;
+
+    @Resource
+    private GroupPermissionGrantMapper groupPermissionGrantMapper;
 
     @Override
     public R assignUserTunnel(UserTunnelDto userTunnelDto) {
@@ -129,6 +133,7 @@ public class UserTunnelServiceImpl extends ServiceImpl<UserTunnelMapper, UserTun
         for (Forward forward : forwardList) {
             forwardService.deleteForward(forward.getId());
         }
+        groupPermissionGrantMapper.delete(new QueryWrapper<com.admin.entity.GroupPermissionGrant>().eq("user_tunnel_id", id));
         this.removeById(id);
         return R.ok();
     }

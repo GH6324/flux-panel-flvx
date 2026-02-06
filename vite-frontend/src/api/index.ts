@@ -147,3 +147,43 @@ export const batchChangeTunnel = (data: {
   forwardIds: number[];
   targetTunnelId: number;
 }) => Network.post("/forward/batch-change-tunnel", data);
+
+// 分组与权限分配接口
+export const getTunnelGroupList = () => Network.post("/group/tunnel/list");
+export const createTunnelGroup = (data: { name: string; status?: number }) =>
+  Network.post("/group/tunnel/create", data);
+export const updateTunnelGroup = (data: {
+  id: number;
+  name: string;
+  status?: number;
+}) => Network.post("/group/tunnel/update", data);
+export const deleteTunnelGroup = (id: number) =>
+  Network.post("/group/tunnel/delete", { id });
+export const assignTunnelsToGroup = (data: {
+  groupId: number;
+  tunnelIds: number[];
+}) => Network.post("/group/tunnel/assign", data);
+
+export const getUserGroupList = () => Network.post("/group/user/list");
+export const createUserGroup = (data: { name: string; status?: number }) =>
+  Network.post("/group/user/create", data);
+export const updateUserGroup = (data: {
+  id: number;
+  name: string;
+  status?: number;
+}) => Network.post("/group/user/update", data);
+export const deleteUserGroup = (id: number) =>
+  Network.post("/group/user/delete", { id });
+export const assignUsersToGroup = (data: {
+  groupId: number;
+  userIds: number[];
+}) => Network.post("/group/user/assign", data);
+
+export const getGroupPermissionList = () =>
+  Network.post("/group/permission/list");
+export const assignGroupPermission = (data: {
+  userGroupId: number;
+  tunnelGroupId: number;
+}) => Network.post("/group/permission/assign", data);
+export const removeGroupPermission = (id: number) =>
+  Network.post("/group/permission/remove", { id });

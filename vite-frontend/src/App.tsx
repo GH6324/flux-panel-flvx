@@ -8,6 +8,7 @@ import ForwardPage from "@/pages/forward";
 import TunnelPage from "@/pages/tunnel";
 import NodePage from "@/pages/node";
 import UserPage from "@/pages/user";
+import GroupPage from "@/pages/group";
 import ProfilePage from "@/pages/profile";
 import LimitPage from "@/pages/limit";
 import ConfigPage from "@/pages/config";
@@ -207,6 +208,14 @@ function App() {
           </ProtectedRoute>
         }
         path="/user"
+      />
+      <Route
+        element={
+          <ProtectedRoute useSimpleLayout={true}>
+            <GroupPage />
+          </ProtectedRoute>
+        }
+        path="/group"
       />
       <Route
         element={
