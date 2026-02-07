@@ -3,6 +3,7 @@ package handler
 import (
 	"database/sql"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"sort"
@@ -63,26 +64,80 @@ func (h *Handler) WebSocketHandler() http.Handler {
 func (h *Handler) Register(mux *http.ServeMux) {
 	mux.HandleFunc("/api/v1/user/login", h.login)
 	mux.HandleFunc("/api/v1/user/list", h.userList)
+	mux.HandleFunc("/api/v1/user/create", h.userCreate)
+	mux.HandleFunc("/api/v1/user/update", h.userUpdate)
+	mux.HandleFunc("/api/v1/user/delete", h.userDelete)
+	mux.HandleFunc("/api/v1/user/reset", h.userResetFlow)
 	mux.HandleFunc("/api/v1/config/get", h.getConfigByName)
 	mux.HandleFunc("/api/v1/config/list", h.getConfigs)
 	mux.HandleFunc("/api/v1/config/update", h.updateConfigs)
 	mux.HandleFunc("/api/v1/config/update-single", h.updateSingleConfig)
 	mux.HandleFunc("/api/v1/captcha/check", h.checkCaptcha)
+	mux.HandleFunc("/api/v1/captcha/generate", h.captchaGenerate)
+	mux.HandleFunc("/api/v1/captcha/verify", h.captchaVerify)
 	mux.HandleFunc("/api/v1/user/package", h.userPackage)
 	mux.HandleFunc("/api/v1/user/updatePassword", h.updatePassword)
 	mux.HandleFunc("/api/v1/node/list", h.nodeList)
+	mux.HandleFunc("/api/v1/node/create", h.nodeCreate)
+	mux.HandleFunc("/api/v1/node/update", h.nodeUpdate)
+	mux.HandleFunc("/api/v1/node/delete", h.nodeDelete)
+	mux.HandleFunc("/api/v1/node/install", h.nodeInstall)
+	mux.HandleFunc("/api/v1/node/update-order", h.nodeUpdateOrder)
+	mux.HandleFunc("/api/v1/node/batch-delete", h.nodeBatchDelete)
+	mux.HandleFunc("/api/v1/node/check-status", h.nodeCheckStatus)
 	mux.HandleFunc("/api/v1/tunnel/list", h.tunnelList)
+	mux.HandleFunc("/api/v1/tunnel/create", h.tunnelCreate)
+	mux.HandleFunc("/api/v1/tunnel/get", h.tunnelGet)
+	mux.HandleFunc("/api/v1/tunnel/update", h.tunnelUpdate)
+	mux.HandleFunc("/api/v1/tunnel/delete", h.tunnelDelete)
+	mux.HandleFunc("/api/v1/tunnel/diagnose", h.tunnelDiagnose)
+	mux.HandleFunc("/api/v1/tunnel/update-order", h.tunnelUpdateOrder)
+	mux.HandleFunc("/api/v1/tunnel/batch-delete", h.tunnelBatchDelete)
+	mux.HandleFunc("/api/v1/tunnel/batch-redeploy", h.tunnelBatchRedeploy)
+	mux.HandleFunc("/api/v1/tunnel/user/assign", h.userTunnelAssign)
+	mux.HandleFunc("/api/v1/tunnel/user/batch-assign", h.userTunnelBatchAssign)
+	mux.HandleFunc("/api/v1/tunnel/user/remove", h.userTunnelRemove)
+	mux.HandleFunc("/api/v1/tunnel/user/update", h.userTunnelUpdate)
 	mux.HandleFunc("/api/v1/forward/list", h.forwardList)
+	mux.HandleFunc("/api/v1/forward/create", h.forwardCreate)
+	mux.HandleFunc("/api/v1/forward/update", h.forwardUpdate)
+	mux.HandleFunc("/api/v1/forward/delete", h.forwardDelete)
+	mux.HandleFunc("/api/v1/forward/force-delete", h.forwardForceDelete)
+	mux.HandleFunc("/api/v1/forward/pause", h.forwardPause)
+	mux.HandleFunc("/api/v1/forward/resume", h.forwardResume)
+	mux.HandleFunc("/api/v1/forward/diagnose", h.forwardDiagnose)
+	mux.HandleFunc("/api/v1/forward/update-order", h.forwardUpdateOrder)
+	mux.HandleFunc("/api/v1/forward/batch-delete", h.forwardBatchDelete)
+	mux.HandleFunc("/api/v1/forward/batch-pause", h.forwardBatchPause)
+	mux.HandleFunc("/api/v1/forward/batch-resume", h.forwardBatchResume)
+	mux.HandleFunc("/api/v1/forward/batch-redeploy", h.forwardBatchRedeploy)
+	mux.HandleFunc("/api/v1/forward/batch-change-tunnel", h.forwardBatchChangeTunnel)
 	mux.HandleFunc("/api/v1/speed-limit/list", h.speedLimitList)
+	mux.HandleFunc("/api/v1/speed-limit/create", h.speedLimitCreate)
+	mux.HandleFunc("/api/v1/speed-limit/update", h.speedLimitUpdate)
+	mux.HandleFunc("/api/v1/speed-limit/delete", h.speedLimitDelete)
+	mux.HandleFunc("/api/v1/speed-limit/tunnels", h.tunnelList)
 	mux.HandleFunc("/api/v1/tunnel/user/tunnel", h.userTunnelVisibleList)
 	mux.HandleFunc("/api/v1/tunnel/user/list", h.userTunnelList)
 	mux.HandleFunc("/api/v1/group/tunnel/list", h.tunnelGroupList)
+	mux.HandleFunc("/api/v1/group/tunnel/create", h.groupTunnelCreate)
+	mux.HandleFunc("/api/v1/group/tunnel/update", h.groupTunnelUpdate)
+	mux.HandleFunc("/api/v1/group/tunnel/delete", h.groupTunnelDelete)
+	mux.HandleFunc("/api/v1/group/tunnel/assign", h.groupTunnelAssign)
 	mux.HandleFunc("/api/v1/group/user/list", h.userGroupList)
+	mux.HandleFunc("/api/v1/group/user/create", h.groupUserCreate)
+	mux.HandleFunc("/api/v1/group/user/update", h.groupUserUpdate)
+	mux.HandleFunc("/api/v1/group/user/delete", h.groupUserDelete)
+	mux.HandleFunc("/api/v1/group/user/assign", h.groupUserAssign)
 	mux.HandleFunc("/api/v1/group/permission/list", h.groupPermissionList)
+	mux.HandleFunc("/api/v1/group/permission/assign", h.groupPermissionAssign)
+	mux.HandleFunc("/api/v1/group/permission/remove", h.groupPermissionRemove)
+	mux.HandleFunc("/api/v1/open_api/sub_store", h.openAPISubStore)
 
 	mux.HandleFunc("/flow/test", h.flowTest)
 	mux.HandleFunc("/flow/config", h.flowConfig)
 	mux.HandleFunc("/flow/upload", h.flowUpload)
+	mux.HandleFunc("/error", h.errorPage)
 }
 
 func (h *Handler) login(w http.ResponseWriter, r *http.Request) {
@@ -240,10 +295,25 @@ func (h *Handler) forwardList(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	userID, roleID, err := userRoleFromRequest(r)
+	if err != nil {
+		response.WriteJSON(w, response.Err(401, "无效的token或token已过期"))
+		return
+	}
+
 	items, err := h.repo.ListForwards()
 	if err != nil {
 		response.WriteJSON(w, response.Err(-2, err.Error()))
 		return
+	}
+	if roleID != 0 {
+		filtered := make([]map[string]interface{}, 0, len(items))
+		for _, item := range items {
+			if asInt64(item["userId"], 0) == userID {
+				filtered = append(filtered, item)
+			}
+		}
+		items = filtered
 	}
 	response.WriteJSON(w, response.OK(items))
 }
@@ -260,6 +330,92 @@ func (h *Handler) speedLimitList(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	response.WriteJSON(w, response.OK(items))
+}
+
+func (h *Handler) openAPISubStore(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		response.WriteJSON(w, response.ErrDefault("请求失败"))
+		return
+	}
+	if h == nil || h.repo == nil || h.repo.DB() == nil {
+		response.WriteJSON(w, response.Err(-2, "database unavailable"))
+		return
+	}
+
+	username := strings.TrimSpace(r.URL.Query().Get("user"))
+	password := strings.TrimSpace(r.URL.Query().Get("pwd"))
+	tunnel := strings.TrimSpace(r.URL.Query().Get("tunnel"))
+	if tunnel == "" {
+		tunnel = "-1"
+	}
+
+	if username == "" {
+		response.WriteJSON(w, response.ErrDefault("用户不能为空"))
+		return
+	}
+	if password == "" {
+		response.WriteJSON(w, response.ErrDefault("密码不能为空"))
+		return
+	}
+
+	user, err := h.repo.GetUserByUsername(username)
+	if err != nil {
+		response.WriteJSON(w, response.Err(-2, err.Error()))
+		return
+	}
+	if user == nil || user.Pwd != security.MD5(password) {
+		response.WriteJSON(w, response.ErrDefault("鉴权失败"))
+		return
+	}
+
+	const giga = int64(1024 * 1024 * 1024)
+	headerValue := ""
+
+	if tunnel == "-1" {
+		headerValue = buildSubscriptionHeader(user.OutFlow, user.InFlow, user.Flow*giga, user.ExpTime/1000)
+	} else {
+		tunnelID, parseErr := strconv.ParseInt(tunnel, 10, 64)
+		if parseErr != nil || tunnelID <= 0 {
+			response.WriteJSON(w, response.ErrDefault("隧道不存在"))
+			return
+		}
+
+		var userID int64
+		var inFlow int64
+		var outFlow int64
+		var flow int64
+		var expTime int64
+		err = h.repo.DB().QueryRow(`SELECT user_id, in_flow, out_flow, flow, exp_time FROM user_tunnel WHERE id = ? LIMIT 1`, tunnelID).
+			Scan(&userID, &inFlow, &outFlow, &flow, &expTime)
+		if err != nil {
+			if err == sql.ErrNoRows {
+				response.WriteJSON(w, response.ErrDefault("隧道不存在"))
+				return
+			}
+			response.WriteJSON(w, response.Err(-2, err.Error()))
+			return
+		}
+		if userID != user.ID {
+			response.WriteJSON(w, response.ErrDefault("隧道不存在"))
+			return
+		}
+
+		headerValue = buildSubscriptionHeader(outFlow, inFlow, flow*giga, expTime/1000)
+	}
+
+	w.Header().Set("subscription-userinfo", headerValue)
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	_, _ = w.Write([]byte(headerValue))
+}
+
+func (h *Handler) errorPage(w http.ResponseWriter, _ *http.Request) {
+	w.Header().Set("Content-Type", "text/html; charset=UTF-8")
+	w.WriteHeader(http.StatusNotFound)
+	_, _ = w.Write([]byte("<!DOCTYPE html><html lang='zh-CN'><head><meta charset='UTF-8'><meta name='viewport' content='width=device-width, initial-scale=1.0'><title>错误 404</title></head><body><div style='min-height:100vh;display:flex;align-items:center;justify-content:center;flex-direction:column;font-family:-apple-system,BlinkMacSystemFont,Segoe UI,Arial,sans-serif;'><div style='font-size:6rem;color:#333;font-weight:300;'>404</div><div style='font-size:1.2rem;color:#666;'>你推开了后端的大门，却发现里面只有寂寞。</div></div></body></html>"))
+}
+
+func buildSubscriptionHeader(upload, download, total, expire int64) string {
+	return fmt.Sprintf("upload=%d; download=%d; total=%d; expire=%d", download, upload, total, expire)
 }
 
 func (h *Handler) userTunnelVisibleList(w http.ResponseWriter, r *http.Request) {
@@ -736,6 +892,18 @@ func userIDFromRequest(r *http.Request) (int64, error) {
 		return 0, strconv.ErrSyntax
 	}
 	return parseUserID(claims.Sub)
+}
+
+func userRoleFromRequest(r *http.Request) (int64, int, error) {
+	claims, ok := r.Context().Value(middleware.ClaimsContextKey).(auth.Claims)
+	if !ok {
+		return 0, 0, strconv.ErrSyntax
+	}
+	userID, err := parseUserID(claims.Sub)
+	if err != nil {
+		return 0, 0, err
+	}
+	return userID, claims.RoleID, nil
 }
 
 func nullableNullInt64(v sql.NullInt64) interface{} {

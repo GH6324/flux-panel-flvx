@@ -2,11 +2,14 @@ package ws
 
 import (
 	"encoding/json"
+	"errors"
+	"fmt"
 	"log"
 	"net/http"
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/gorilla/websocket"
 
@@ -38,15 +41,36 @@ type nodeSession struct {
 	conn   *connWrap
 }
 
+type commandResponse struct {
+	Type      string          `json:"type"`
+	Success   bool            `json:"success"`
+	Message   string          `json:"message"`
+	Data      json.RawMessage `json:"data,omitempty"`
+	RequestID string          `json:"requestId,omitempty"`
+}
+
+type pendingRequest struct {
+	nodeID int64
+	ch     chan CommandResult
+}
+
+type CommandResult struct {
+	Type    string                 `json:"type"`
+	Success bool                   `json:"success"`
+	Message string                 `json:"message"`
+	Data    map[string]interface{} `json:"data,omitempty"`
+}
+
 type Server struct {
 	repo      *sqlite.Repository
 	jwtSecret string
 	upgrader  websocket.Upgrader
 
-	mu     sync.RWMutex
-	admins map[*connWrap]struct{}
-	nodes  map[int64]*nodeSession
-	byConn map[*websocket.Conn]*nodeSession
+	mu      sync.RWMutex
+	admins  map[*connWrap]struct{}
+	nodes   map[int64]*nodeSession
+	byConn  map[*websocket.Conn]*nodeSession
+	pending map[string]pendingRequest
 }
 
 func NewServer(repo *sqlite.Repository, jwtSecret string) *Server {
@@ -56,9 +80,10 @@ func NewServer(repo *sqlite.Repository, jwtSecret string) *Server {
 		upgrader: websocket.Upgrader{
 			CheckOrigin: func(r *http.Request) bool { return true },
 		},
-		admins: make(map[*connWrap]struct{}),
-		nodes:  make(map[int64]*nodeSession),
-		byConn: make(map[*websocket.Conn]*nodeSession),
+		admins:  make(map[*connWrap]struct{}),
+		nodes:   make(map[int64]*nodeSession),
+		byConn:  make(map[*websocket.Conn]*nodeSession),
+		pending: make(map[string]pendingRequest),
 	}
 }
 
@@ -150,6 +175,7 @@ func (s *Server) handleNode(w http.ResponseWriter, r *http.Request, nodeID int64
 		delete(s.byConn, conn)
 		s.mu.Unlock()
 		if needOfflineBroadcast {
+			s.failPendingForNode(nodeID, "节点连接已断开")
 			_ = s.repo.UpdateNodeStatus(nodeID, 0)
 			s.broadcastStatus(nodeID, 0)
 		}
@@ -163,7 +189,183 @@ func (s *Server) handleNode(w http.ResponseWriter, r *http.Request, nodeID int64
 		}
 
 		msg := decryptIfNeeded(payload, secret)
+		s.tryResolvePending(nodeID, msg)
 		s.broadcastInfo(nodeID, msg)
+	}
+}
+
+func (s *Server) SendCommand(nodeID int64, cmdType string, data interface{}, timeout time.Duration) (CommandResult, error) {
+	if s == nil {
+		return CommandResult{}, errors.New("server not initialized")
+	}
+	if strings.TrimSpace(cmdType) == "" {
+		return CommandResult{}, errors.New("command type is empty")
+	}
+	if timeout <= 0 {
+		timeout = 10 * time.Second
+	}
+
+	s.mu.RLock()
+	ns, ok := s.nodes[nodeID]
+	s.mu.RUnlock()
+	if !ok || ns == nil || ns.conn == nil || ns.conn.conn == nil {
+		return CommandResult{}, errors.New("节点不在线")
+	}
+
+	requestID := fmt.Sprintf("%d_%d", nodeID, time.Now().UnixNano())
+	ch := make(chan CommandResult, 1)
+
+	s.mu.Lock()
+	s.pending[requestID] = pendingRequest{nodeID: nodeID, ch: ch}
+	s.mu.Unlock()
+
+	cleanup := func() {
+		s.mu.Lock()
+		if p, exists := s.pending[requestID]; exists {
+			delete(s.pending, requestID)
+			close(p.ch)
+		}
+		s.mu.Unlock()
+	}
+
+	cmdPayload := map[string]interface{}{
+		"type":      cmdType,
+		"data":      data,
+		"requestId": requestID,
+	}
+	rawCmd, err := json.Marshal(cmdPayload)
+	if err != nil {
+		cleanup()
+		return CommandResult{}, err
+	}
+
+	messageData := rawCmd
+	if strings.TrimSpace(ns.secret) != "" {
+		crypto, err := security.NewAESCrypto(ns.secret)
+		if err != nil {
+			cleanup()
+			return CommandResult{}, err
+		}
+		encrypted, err := crypto.Encrypt(rawCmd)
+		if err != nil {
+			cleanup()
+			return CommandResult{}, err
+		}
+		wrapper := map[string]interface{}{
+			"encrypted": true,
+			"data":      encrypted,
+			"timestamp": time.Now().UnixMilli(),
+		}
+		messageData, err = json.Marshal(wrapper)
+		if err != nil {
+			cleanup()
+			return CommandResult{}, err
+		}
+	}
+
+	ns.conn.mu.Lock()
+	err = ns.conn.conn.WriteMessage(websocket.TextMessage, messageData)
+	ns.conn.mu.Unlock()
+	if err != nil {
+		cleanup()
+		return CommandResult{}, err
+	}
+
+	select {
+	case result, ok := <-ch:
+		if !ok {
+			return CommandResult{}, errors.New("命令通道已关闭")
+		}
+		if !result.Success {
+			if strings.TrimSpace(result.Message) == "" {
+				result.Message = "命令执行失败"
+			}
+			return result, errors.New(result.Message)
+		}
+		return result, nil
+	case <-time.After(timeout):
+		cleanup()
+		return CommandResult{}, errors.New("等待节点响应超时")
+	}
+}
+
+func (s *Server) tryResolvePending(nodeID int64, message string) {
+	if s == nil || strings.TrimSpace(message) == "" {
+		return
+	}
+
+	var resp commandResponse
+	if err := json.Unmarshal([]byte(message), &resp); err != nil {
+		return
+	}
+	if strings.TrimSpace(resp.RequestID) == "" {
+		return
+	}
+
+	s.mu.Lock()
+	p, ok := s.pending[resp.RequestID]
+	if ok {
+		delete(s.pending, resp.RequestID)
+	}
+	s.mu.Unlock()
+	if !ok {
+		return
+	}
+	if p.nodeID != nodeID {
+		select {
+		case p.ch <- CommandResult{Type: resp.Type, Success: false, Message: "节点响应与请求不匹配"}:
+		default:
+		}
+		close(p.ch)
+		return
+	}
+
+	result := CommandResult{
+		Type:    resp.Type,
+		Success: resp.Success,
+		Message: resp.Message,
+	}
+	if len(resp.Data) > 0 {
+		var data map[string]interface{}
+		if err := json.Unmarshal(resp.Data, &data); err == nil {
+			result.Data = data
+		}
+	}
+
+	select {
+	case p.ch <- result:
+	default:
+	}
+	close(p.ch)
+}
+
+func (s *Server) failPendingForNode(nodeID int64, message string) {
+	if s == nil {
+		return
+	}
+
+	type pair struct {
+		id string
+		pr pendingRequest
+	}
+	items := make([]pair, 0)
+
+	s.mu.Lock()
+	for id, pr := range s.pending {
+		if pr.nodeID != nodeID {
+			continue
+		}
+		items = append(items, pair{id: id, pr: pr})
+		delete(s.pending, id)
+	}
+	s.mu.Unlock()
+
+	for _, item := range items {
+		select {
+		case item.pr.ch <- CommandResult{Success: false, Message: message}:
+		default:
+		}
+		close(item.pr.ch)
 	}
 }
 
