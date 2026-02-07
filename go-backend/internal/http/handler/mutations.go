@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net"
 	"net/http"
 	"sort"
 	"strconv"
@@ -525,6 +526,16 @@ func (h *Handler) tunnelCreate(w http.ResponseWriter, r *http.Request) {
 		response.WriteJSON(w, response.ErrDefault("隧道名称不能为空"))
 		return
 	}
+	var tunnelNameDup int
+	if err := h.repo.DB().QueryRow(`SELECT COUNT(1) FROM tunnel WHERE name = ?`, name).Scan(&tunnelNameDup); err != nil {
+		response.WriteJSON(w, response.Err(-2, err.Error()))
+		return
+	}
+	if tunnelNameDup > 0 {
+		response.WriteJSON(w, response.ErrDefault("隧道名称重复"))
+		return
+	}
+
 	typeVal := asInt(req["type"], 1)
 	flow := asInt64(req["flow"], 1)
 	status := asInt(req["status"], 1)
@@ -540,6 +551,15 @@ func (h *Handler) tunnelCreate(w http.ResponseWriter, r *http.Request) {
 	}
 	defer func() { _ = tx.Rollback() }()
 
+	runtimeState, err := h.prepareTunnelCreateState(tx, req, typeVal)
+	if err != nil {
+		response.WriteJSON(w, response.ErrDefault(err.Error()))
+		return
+	}
+	if strings.TrimSpace(inIP) == "" {
+		inIP = buildTunnelInIP(runtimeState.InNodes, runtimeState.Nodes)
+	}
+
 	res, err := tx.Exec(`INSERT INTO tunnel(name, traffic_ratio, type, protocol, flow, created_time, updated_time, status, in_ip, inx) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		name, trafficRatio, typeVal, "tls", flow, now, now, status, nullableText(inIP), inx)
 	if err != nil {
@@ -547,6 +567,8 @@ func (h *Handler) tunnelCreate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	tunnelID, _ := res.LastInsertId()
+	runtimeState.TunnelID = tunnelID
+	applyTunnelPortsToRequest(req, runtimeState)
 	if err := replaceTunnelChainsTx(tx, tunnelID, req); err != nil {
 		response.WriteJSON(w, response.Err(-2, err.Error()))
 		return
@@ -554,6 +576,15 @@ func (h *Handler) tunnelCreate(w http.ResponseWriter, r *http.Request) {
 	if err := tx.Commit(); err != nil {
 		response.WriteJSON(w, response.Err(-2, err.Error()))
 		return
+	}
+	if typeVal == 2 {
+		createdChains, createdServices, applyErr := h.applyTunnelRuntime(runtimeState)
+		if applyErr != nil {
+			h.rollbackTunnelRuntime(createdChains, createdServices, tunnelID)
+			_ = h.deleteTunnelByID(tunnelID)
+			response.WriteJSON(w, response.ErrDefault(applyErr.Error()))
+			return
+		}
 	}
 	response.WriteJSON(w, response.OKEmpty())
 }
@@ -1640,7 +1671,566 @@ func queryPairs(db *sql.DB, q string, args ...interface{}) ([][2]int64, error) {
 	return out, rows.Err()
 }
 
+type tunnelRuntimeNode struct {
+	NodeID    int64
+	Protocol  string
+	Strategy  string
+	Inx       int
+	ChainType int
+	Port      int
+}
+
+type tunnelCreateState struct {
+	TunnelID   int64
+	Type       int
+	InNodes    []tunnelRuntimeNode
+	ChainHops  [][]tunnelRuntimeNode
+	OutNodes   []tunnelRuntimeNode
+	Nodes      map[int64]*nodeRecord
+	NodeIDList []int64
+}
+
+func (h *Handler) prepareTunnelCreateState(tx *sql.Tx, req map[string]interface{}, tunnelType int) (*tunnelCreateState, error) {
+	state := &tunnelCreateState{
+		Type:      tunnelType,
+		InNodes:   make([]tunnelRuntimeNode, 0),
+		ChainHops: make([][]tunnelRuntimeNode, 0),
+		OutNodes:  make([]tunnelRuntimeNode, 0),
+		Nodes:     make(map[int64]*nodeRecord),
+	}
+	nodeIDs := make([]int64, 0)
+
+	for _, item := range asMapSlice(req["inNodeId"]) {
+		nodeID := asInt64(item["nodeId"], 0)
+		if nodeID <= 0 {
+			continue
+		}
+		nodeIDs = append(nodeIDs, nodeID)
+		state.InNodes = append(state.InNodes, tunnelRuntimeNode{
+			NodeID:    nodeID,
+			Protocol:  defaultString(asString(item["protocol"]), "tls"),
+			Strategy:  defaultString(asString(item["strategy"]), "round"),
+			ChainType: 1,
+		})
+	}
+	if len(state.InNodes) == 0 {
+		return nil, errors.New("入口不能为空")
+	}
+
+	if tunnelType == 2 {
+		outNodesRaw := asMapSlice(req["outNodeId"])
+		if len(outNodesRaw) == 0 {
+			return nil, errors.New("出口不能为空")
+		}
+
+		allocated := map[int64]int{}
+		for _, item := range outNodesRaw {
+			nodeID := asInt64(item["nodeId"], 0)
+			if nodeID <= 0 {
+				continue
+			}
+			nodeIDs = append(nodeIDs, nodeID)
+			port := asInt(item["port"], 0)
+			if port <= 0 {
+				var err error
+				port, err = pickNodePortTx(tx, nodeID, allocated)
+				if err != nil {
+					return nil, err
+				}
+			}
+			state.OutNodes = append(state.OutNodes, tunnelRuntimeNode{
+				NodeID:    nodeID,
+				Protocol:  defaultString(asString(item["protocol"]), "tls"),
+				Strategy:  defaultString(asString(item["strategy"]), "round"),
+				ChainType: 3,
+				Port:      port,
+			})
+		}
+		if len(state.OutNodes) == 0 {
+			return nil, errors.New("出口不能为空")
+		}
+
+		for hopIdx, hopRaw := range asAnySlice(req["chainNodes"]) {
+			hop := make([]tunnelRuntimeNode, 0)
+			for _, item := range asMapSlice(hopRaw) {
+				nodeID := asInt64(item["nodeId"], 0)
+				if nodeID <= 0 {
+					continue
+				}
+				nodeIDs = append(nodeIDs, nodeID)
+				port := asInt(item["port"], 0)
+				if port <= 0 {
+					var err error
+					port, err = pickNodePortTx(tx, nodeID, allocated)
+					if err != nil {
+						return nil, err
+					}
+				}
+				hop = append(hop, tunnelRuntimeNode{
+					NodeID:    nodeID,
+					Protocol:  defaultString(asString(item["protocol"]), "tls"),
+					Strategy:  defaultString(asString(item["strategy"]), "round"),
+					Inx:       hopIdx + 1,
+					ChainType: 2,
+					Port:      port,
+				})
+			}
+			if len(hop) > 0 {
+				state.ChainHops = append(state.ChainHops, hop)
+			}
+		}
+	}
+
+	seen := make(map[int64]struct{}, len(nodeIDs))
+	for _, nodeID := range nodeIDs {
+		if _, ok := seen[nodeID]; ok {
+			return nil, errors.New("节点重复")
+		}
+		seen[nodeID] = struct{}{}
+		state.NodeIDList = append(state.NodeIDList, nodeID)
+		node, err := h.getNodeRecord(nodeID)
+		if err != nil {
+			if strings.Contains(err.Error(), "不存在") {
+				return nil, errors.New("节点不存在")
+			}
+			return nil, err
+		}
+		if node.Status != 1 {
+			return nil, errors.New("部分节点不在线")
+		}
+		state.Nodes[nodeID] = node
+	}
+
+	return state, nil
+}
+
+func buildTunnelInIP(inNodes []tunnelRuntimeNode, nodes map[int64]*nodeRecord) string {
+	set := make(map[string]struct{})
+	ordered := make([]string, 0)
+	for _, inNode := range inNodes {
+		node := nodes[inNode.NodeID]
+		if node == nil {
+			continue
+		}
+		if v := strings.TrimSpace(node.ServerIPv4); v != "" {
+			if _, ok := set[v]; !ok {
+				set[v] = struct{}{}
+				ordered = append(ordered, v)
+			}
+		}
+		if v := strings.TrimSpace(node.ServerIPv6); v != "" {
+			if _, ok := set[v]; !ok {
+				set[v] = struct{}{}
+				ordered = append(ordered, v)
+			}
+		}
+		if strings.TrimSpace(node.ServerIPv4) == "" && strings.TrimSpace(node.ServerIPv6) == "" {
+			if v := strings.TrimSpace(node.ServerIP); v != "" {
+				if _, ok := set[v]; !ok {
+					set[v] = struct{}{}
+					ordered = append(ordered, v)
+				}
+			}
+		}
+	}
+	return strings.Join(ordered, ",")
+}
+
+func applyTunnelPortsToRequest(req map[string]interface{}, state *tunnelCreateState) {
+	if req == nil || state == nil {
+		return
+	}
+	outPorts := make(map[int64]int)
+	for _, n := range state.OutNodes {
+		outPorts[n.NodeID] = n.Port
+	}
+	for _, item := range asMapSlice(req["outNodeId"]) {
+		nodeID := asInt64(item["nodeId"], 0)
+		if port, ok := outPorts[nodeID]; ok && port > 0 {
+			item["port"] = port
+		}
+	}
+
+	chainPorts := make(map[int64]int)
+	for _, hop := range state.ChainHops {
+		for _, n := range hop {
+			chainPorts[n.NodeID] = n.Port
+		}
+	}
+	for _, hopRaw := range asAnySlice(req["chainNodes"]) {
+		for _, item := range asMapSlice(hopRaw) {
+			nodeID := asInt64(item["nodeId"], 0)
+			if port, ok := chainPorts[nodeID]; ok && port > 0 {
+				item["port"] = port
+			}
+		}
+	}
+}
+
+func (h *Handler) applyTunnelRuntime(state *tunnelCreateState) ([]int64, []int64, error) {
+	if h == nil || state == nil {
+		return nil, nil, errors.New("invalid tunnel runtime state")
+	}
+	createdChains := make([]int64, 0)
+	createdServices := make([]int64, 0)
+	if state.Type != 2 {
+		return createdChains, createdServices, nil
+	}
+
+	for _, inNode := range state.InNodes {
+		targets := state.OutNodes
+		if len(state.ChainHops) > 0 {
+			targets = state.ChainHops[0]
+		}
+		chainData, err := buildTunnelChainConfig(state.TunnelID, inNode.NodeID, targets, state.Nodes)
+		if err != nil {
+			return createdChains, createdServices, err
+		}
+		if _, err := h.sendNodeCommand(inNode.NodeID, "AddChains", chainData, true, false); err != nil {
+			return createdChains, createdServices, fmt.Errorf("入口节点 %s 下发转发链失败: %w", nodeDisplayName(state.Nodes[inNode.NodeID]), err)
+		}
+		createdChains = append(createdChains, inNode.NodeID)
+	}
+
+	for i, hop := range state.ChainHops {
+		nextTargets := state.OutNodes
+		if i+1 < len(state.ChainHops) {
+			nextTargets = state.ChainHops[i+1]
+		}
+		for _, chainNode := range hop {
+			chainData, err := buildTunnelChainConfig(state.TunnelID, chainNode.NodeID, nextTargets, state.Nodes)
+			if err != nil {
+				return createdChains, createdServices, err
+			}
+			if _, err := h.sendNodeCommand(chainNode.NodeID, "AddChains", chainData, true, false); err != nil {
+				return createdChains, createdServices, fmt.Errorf("转发链节点 %s 下发转发链失败: %w", nodeDisplayName(state.Nodes[chainNode.NodeID]), err)
+			}
+			createdChains = append(createdChains, chainNode.NodeID)
+
+			serviceData := buildTunnelChainServiceConfig(state.TunnelID, chainNode, state.Nodes[chainNode.NodeID])
+			if _, err := h.sendNodeCommand(chainNode.NodeID, "AddService", serviceData, true, false); err != nil {
+				return createdChains, createdServices, fmt.Errorf("转发链节点 %s 下发服务失败: %w", nodeDisplayName(state.Nodes[chainNode.NodeID]), err)
+			}
+			createdServices = append(createdServices, chainNode.NodeID)
+		}
+	}
+
+	for _, outNode := range state.OutNodes {
+		serviceData := buildTunnelChainServiceConfig(state.TunnelID, outNode, state.Nodes[outNode.NodeID])
+		if _, err := h.sendNodeCommand(outNode.NodeID, "AddService", serviceData, true, false); err != nil {
+			return createdChains, createdServices, fmt.Errorf("出口节点 %s 下发服务失败: %w", nodeDisplayName(state.Nodes[outNode.NodeID]), err)
+		}
+		createdServices = append(createdServices, outNode.NodeID)
+	}
+
+	return createdChains, createdServices, nil
+}
+
+func (h *Handler) rollbackTunnelRuntime(chainNodeIDs, serviceNodeIDs []int64, tunnelID int64) {
+	if h == nil || tunnelID <= 0 {
+		return
+	}
+	seenServices := make(map[int64]struct{})
+	serviceName := fmt.Sprintf("%d_tls", tunnelID)
+	for i := len(serviceNodeIDs) - 1; i >= 0; i-- {
+		nodeID := serviceNodeIDs[i]
+		if _, ok := seenServices[nodeID]; ok {
+			continue
+		}
+		seenServices[nodeID] = struct{}{}
+		_, _ = h.sendNodeCommand(nodeID, "DeleteService", map[string]interface{}{"services": []string{serviceName}}, false, true)
+	}
+
+	seenChains := make(map[int64]struct{})
+	chainName := fmt.Sprintf("chains_%d", tunnelID)
+	for i := len(chainNodeIDs) - 1; i >= 0; i-- {
+		nodeID := chainNodeIDs[i]
+		if _, ok := seenChains[nodeID]; ok {
+			continue
+		}
+		seenChains[nodeID] = struct{}{}
+		_, _ = h.sendNodeCommand(nodeID, "DeleteChains", map[string]interface{}{"chain": chainName}, false, true)
+	}
+}
+
+func buildTunnelChainConfig(tunnelID int64, fromNodeID int64, targets []tunnelRuntimeNode, nodes map[int64]*nodeRecord) (map[string]interface{}, error) {
+	fromNode := nodes[fromNodeID]
+	if fromNode == nil {
+		return nil, errors.New("节点不存在")
+	}
+	if len(targets) == 0 {
+		return nil, errors.New("转发链目标不能为空")
+	}
+	nodeItems := make([]map[string]interface{}, 0, len(targets))
+	for idx, target := range targets {
+		targetNode := nodes[target.NodeID]
+		if targetNode == nil {
+			return nil, errors.New("节点不存在")
+		}
+		host, err := selectTunnelDialHost(fromNode, targetNode)
+		if err != nil {
+			return nil, err
+		}
+		port := target.Port
+		if port <= 0 {
+			return nil, errors.New("节点端口不能为空")
+		}
+		nodeItems = append(nodeItems, map[string]interface{}{
+			"name": fmt.Sprintf("node_%d", idx+1),
+			"addr": processServerAddress(fmt.Sprintf("%s:%d", host, port)),
+			"connector": map[string]interface{}{
+				"type": "relay",
+			},
+			"dialer": map[string]interface{}{
+				"type": defaultString(target.Protocol, "tls"),
+			},
+		})
+	}
+
+	strategy := defaultString(strings.TrimSpace(targets[0].Strategy), "round")
+	hop := map[string]interface{}{
+		"name": fmt.Sprintf("hop_%d", tunnelID),
+		"selector": map[string]interface{}{
+			"strategy":    strategy,
+			"maxFails":    1,
+			"failTimeout": int64(600000000000),
+		},
+		"nodes": nodeItems,
+	}
+	if strings.TrimSpace(fromNode.InterfaceName) != "" {
+		hop["interface"] = fromNode.InterfaceName
+	}
+
+	return map[string]interface{}{
+		"name": fmt.Sprintf("chains_%d", tunnelID),
+		"hops": []map[string]interface{}{hop},
+	}, nil
+}
+
+func buildTunnelChainServiceConfig(tunnelID int64, chainNode tunnelRuntimeNode, node *nodeRecord) []map[string]interface{} {
+	if node == nil {
+		return nil
+	}
+	service := map[string]interface{}{
+		"name": fmt.Sprintf("%d_tls", tunnelID),
+		"addr": fmt.Sprintf("%s:%d", node.TCPListenAddr, chainNode.Port),
+		"handler": map[string]interface{}{
+			"type": "relay",
+		},
+		"listener": map[string]interface{}{
+			"type": defaultString(chainNode.Protocol, "tls"),
+		},
+	}
+	if chainNode.ChainType == 2 {
+		service["handler"].(map[string]interface{})["chain"] = fmt.Sprintf("chains_%d", tunnelID)
+	}
+	if chainNode.ChainType == 3 && strings.TrimSpace(node.InterfaceName) != "" {
+		service["metadata"] = map[string]interface{}{"interface": node.InterfaceName}
+	}
+	return []map[string]interface{}{service}
+}
+
+func selectTunnelDialHost(fromNode, toNode *nodeRecord) (string, error) {
+	if fromNode == nil || toNode == nil {
+		return "", errors.New("节点不存在")
+	}
+	fromV4 := nodeSupportsV4(fromNode)
+	fromV6 := nodeSupportsV6(fromNode)
+	toV4 := nodeSupportsV4(toNode)
+	toV6 := nodeSupportsV6(toNode)
+
+	if fromV4 && toV4 {
+		host := pickNodeAddressV4(toNode)
+		if host != "" {
+			return host, nil
+		}
+	}
+	if fromV6 && toV6 {
+		host := pickNodeAddressV6(toNode)
+		if host != "" {
+			return host, nil
+		}
+	}
+	return "", fmt.Errorf("节点链路不兼容：%s(v4=%t,v6=%t) -> %s(v4=%t,v6=%t)", nodeDisplayName(fromNode), fromV4, fromV6, nodeDisplayName(toNode), toV4, toV6)
+}
+
+func nodeDisplayName(node *nodeRecord) string {
+	if node == nil {
+		return "node"
+	}
+	if strings.TrimSpace(node.Name) != "" {
+		return strings.TrimSpace(node.Name)
+	}
+	return fmt.Sprintf("node_%d", node.ID)
+}
+
+func nodeSupportsV4(node *nodeRecord) bool {
+	if node == nil {
+		return false
+	}
+	if strings.TrimSpace(node.ServerIPv4) != "" {
+		return true
+	}
+	if strings.TrimSpace(node.ServerIPv6) != "" {
+		return false
+	}
+	legacy := strings.Trim(strings.TrimSpace(node.ServerIP), "[]")
+	if legacy == "" {
+		return false
+	}
+	if ip := net.ParseIP(legacy); ip != nil {
+		return ip.To4() != nil
+	}
+	return true
+}
+
+func nodeSupportsV6(node *nodeRecord) bool {
+	if node == nil {
+		return false
+	}
+	if strings.TrimSpace(node.ServerIPv6) != "" {
+		return true
+	}
+	if strings.TrimSpace(node.ServerIPv4) != "" {
+		return false
+	}
+	legacy := strings.Trim(strings.TrimSpace(node.ServerIP), "[]")
+	if legacy == "" {
+		return false
+	}
+	if ip := net.ParseIP(legacy); ip != nil {
+		return ip.To4() == nil
+	}
+	return true
+}
+
+func pickNodeAddressV4(node *nodeRecord) string {
+	if node == nil {
+		return ""
+	}
+	if v := strings.TrimSpace(node.ServerIPv4); v != "" {
+		return v
+	}
+	return strings.TrimSpace(node.ServerIP)
+}
+
+func pickNodeAddressV6(node *nodeRecord) string {
+	if node == nil {
+		return ""
+	}
+	if v := strings.TrimSpace(node.ServerIPv6); v != "" {
+		return v
+	}
+	return strings.TrimSpace(node.ServerIP)
+}
+
+func pickNodePortTx(tx *sql.Tx, nodeID int64, allocated map[int64]int) (int, error) {
+	if tx == nil {
+		return 0, errors.New("database unavailable")
+	}
+	if nodeID <= 0 {
+		return 0, errors.New("节点不存在")
+	}
+	if port, ok := allocated[nodeID]; ok && port > 0 {
+		return port, nil
+	}
+
+	var portRange string
+	if err := tx.QueryRow(`SELECT port FROM node WHERE id = ? LIMIT 1`, nodeID).Scan(&portRange); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return 0, errors.New("节点不存在")
+		}
+		return 0, err
+	}
+	candidates := parsePortRangeSpec(portRange)
+	if len(candidates) == 0 {
+		return 0, errors.New("节点端口已满，无可用端口")
+	}
+
+	used := map[int]struct{}{}
+	chainRows, err := tx.Query(`SELECT port FROM chain_tunnel WHERE node_id = ? AND port IS NOT NULL`, nodeID)
+	if err != nil {
+		return 0, err
+	}
+	for chainRows.Next() {
+		var p sql.NullInt64
+		if scanErr := chainRows.Scan(&p); scanErr == nil && p.Valid && p.Int64 > 0 {
+			used[int(p.Int64)] = struct{}{}
+		}
+	}
+	_ = chainRows.Close()
+
+	forwardRows, err := tx.Query(`SELECT port FROM forward_port WHERE node_id = ?`, nodeID)
+	if err != nil {
+		return 0, err
+	}
+	for forwardRows.Next() {
+		var p sql.NullInt64
+		if scanErr := forwardRows.Scan(&p); scanErr == nil && p.Valid && p.Int64 > 0 {
+			used[int(p.Int64)] = struct{}{}
+		}
+	}
+	_ = forwardRows.Close()
+
+	for _, candidate := range candidates {
+		if candidate <= 0 {
+			continue
+		}
+		if _, ok := used[candidate]; ok {
+			continue
+		}
+		allocated[nodeID] = candidate
+		return candidate, nil
+	}
+	return 0, errors.New("节点端口已满，无可用端口")
+}
+
+func parsePortRangeSpec(input string) []int {
+	input = strings.TrimSpace(input)
+	if input == "" {
+		return nil
+	}
+	set := make(map[int]struct{})
+	parts := strings.Split(input, ",")
+	for _, part := range parts {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			continue
+		}
+		if strings.Contains(part, "-") {
+			r := strings.SplitN(part, "-", 2)
+			if len(r) != 2 {
+				continue
+			}
+			start, err1 := strconv.Atoi(strings.TrimSpace(r[0]))
+			end, err2 := strconv.Atoi(strings.TrimSpace(r[1]))
+			if err1 != nil || err2 != nil || start <= 0 || end <= 0 {
+				continue
+			}
+			if end < start {
+				start, end = end, start
+			}
+			for p := start; p <= end; p++ {
+				set[p] = struct{}{}
+			}
+			continue
+		}
+		p, err := strconv.Atoi(part)
+		if err != nil || p <= 0 {
+			continue
+		}
+		set[p] = struct{}{}
+	}
+	out := make([]int, 0, len(set))
+	for p := range set {
+		out = append(out, p)
+	}
+	sort.Ints(out)
+	return out
+}
+
 func replaceTunnelChainsTx(tx *sql.Tx, tunnelID int64, req map[string]interface{}) error {
+	allocated := map[int64]int{}
 	inNodes := asMapSlice(req["inNodeId"])
 	for _, n := range inNodes {
 		nodeID := asInt64(n["nodeId"], 0)
@@ -1658,8 +2248,16 @@ func replaceTunnelChainsTx(tx *sql.Tx, tunnelID int64, req map[string]interface{
 		if nodeID <= 0 {
 			continue
 		}
-		_, err := tx.Exec(`INSERT INTO chain_tunnel(tunnel_id, chain_type, node_id, port, strategy, inx, protocol) VALUES(?, 3, ?, NULL, NULL, 0, ?)`,
-			tunnelID, nodeID, defaultString(asString(n["protocol"]), "tls"))
+		port := asInt(n["port"], 0)
+		if port <= 0 {
+			var pickErr error
+			port, pickErr = pickNodePortTx(tx, nodeID, allocated)
+			if pickErr != nil {
+				return pickErr
+			}
+		}
+		_, err := tx.Exec(`INSERT INTO chain_tunnel(tunnel_id, chain_type, node_id, port, strategy, inx, protocol) VALUES(?, 3, ?, ?, NULL, 0, ?)`,
+			tunnelID, nodeID, port, defaultString(asString(n["protocol"]), "tls"))
 		if err != nil {
 			return err
 		}
@@ -1671,8 +2269,16 @@ func replaceTunnelChainsTx(tx *sql.Tx, tunnelID int64, req map[string]interface{
 			if nodeID <= 0 {
 				continue
 			}
-			_, err := tx.Exec(`INSERT INTO chain_tunnel(tunnel_id, chain_type, node_id, port, strategy, inx, protocol) VALUES(?, 2, ?, NULL, ?, ?, ?)`,
-				tunnelID, nodeID, defaultString(asString(n["strategy"]), "round"), i, defaultString(asString(n["protocol"]), "tls"))
+			port := asInt(n["port"], 0)
+			if port <= 0 {
+				var pickErr error
+				port, pickErr = pickNodePortTx(tx, nodeID, allocated)
+				if pickErr != nil {
+					return pickErr
+				}
+			}
+			_, err := tx.Exec(`INSERT INTO chain_tunnel(tunnel_id, chain_type, node_id, port, strategy, inx, protocol) VALUES(?, 2, ?, ?, ?, ?, ?)`,
+				tunnelID, nodeID, port, defaultString(asString(n["strategy"]), "round"), i+1, defaultString(asString(n["protocol"]), "tls"))
 			if err != nil {
 				return err
 			}

@@ -44,6 +44,9 @@ type nodeRecord struct {
 	ID            int64
 	Name          string
 	ServerIP      string
+	ServerIPv4    string
+	ServerIPv6    string
+	Status        int
 	PortRange     string
 	TCPListenAddr string
 	UDPListenAddr string
@@ -192,23 +195,27 @@ func (h *Handler) listForwardPorts(forwardID int64) ([]forwardPortRecord, error)
 
 func (h *Handler) getNodeRecord(nodeID int64) (*nodeRecord, error) {
 	row := h.repo.DB().QueryRow(`
-		SELECT id, name, server_ip, port, tcp_listen_addr, udp_listen_addr, interface_name
+		SELECT id, name, server_ip, server_ip_v4, server_ip_v6, status, port, tcp_listen_addr, udp_listen_addr, interface_name
 		FROM node
 		WHERE id = ?
 		LIMIT 1
 	`, nodeID)
 	var n nodeRecord
+	var serverIPv4 sql.NullString
+	var serverIPv6 sql.NullString
 	var portRange sql.NullString
 	var tcpListen sql.NullString
 	var udpListen sql.NullString
 	var iface sql.NullString
-	err := row.Scan(&n.ID, &n.Name, &n.ServerIP, &portRange, &tcpListen, &udpListen, &iface)
+	err := row.Scan(&n.ID, &n.Name, &n.ServerIP, &serverIPv4, &serverIPv6, &n.Status, &portRange, &tcpListen, &udpListen, &iface)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, errors.New("节点不存在")
 		}
 		return nil, err
 	}
+	n.ServerIPv4 = strings.TrimSpace(serverIPv4.String)
+	n.ServerIPv6 = strings.TrimSpace(serverIPv6.String)
 	n.PortRange = strings.TrimSpace(portRange.String)
 	n.TCPListenAddr = strings.TrimSpace(tcpListen.String)
 	n.UDPListenAddr = strings.TrimSpace(udpListen.String)
