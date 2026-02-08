@@ -387,33 +387,30 @@ func (h *Handler) controlForwardServices(forward *forwardRecord, commandType str
 		nodeHandled := false
 
 		for _, base := range bases {
-			payload := map[string]interface{}{
-				"services": buildForwardControlServiceNames(base, commandType),
+			variants := []string{base + "_tcp", base + "_udp"}
+			if shouldTryLegacySingleService(commandType) || strings.EqualFold(strings.TrimSpace(commandType), "DeleteService") {
+				variants = append(variants, base)
 			}
-			_, err := h.sendNodeCommand(fp.NodeID, commandType, payload, false, false)
-			if err == nil {
+
+			candidateHandled := false
+			for _, name := range variants {
+				payload := map[string]interface{}{
+					"services": []string{name},
+				}
+				_, err := h.sendNodeCommand(fp.NodeID, commandType, payload, false, false)
+				if err == nil {
+					candidateHandled = true
+					continue
+				}
+				if !isNotFoundError(err) {
+					return err
+				}
+				lastNotFoundErr = err
+			}
+
+			if candidateHandled {
 				nodeHandled = true
 				break
-			}
-
-			if !isNotFoundError(err) {
-				return err
-			}
-			lastNotFoundErr = err
-
-			if shouldTryLegacySingleService(commandType) {
-				legacyPayload := map[string]interface{}{
-					"services": []string{base},
-				}
-				_, legacyErr := h.sendNodeCommand(fp.NodeID, commandType, legacyPayload, false, false)
-				if legacyErr == nil {
-					nodeHandled = true
-					break
-				}
-				if !isNotFoundError(legacyErr) {
-					return legacyErr
-				}
-				lastNotFoundErr = legacyErr
 			}
 		}
 
